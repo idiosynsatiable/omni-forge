@@ -1,0 +1,121 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model App {
+  id                     String   @id @default(cuid())
+  name                   String
+  slug                   String   @unique
+  description            String
+  category               String   @default("utility")
+  status                 String   @default("draft")
+  port                   Int      @default(4100)
+  healthScore            Int      @default(100)
+  artifactIntegrityScore Int      @default(0)
+  deploymentStatus       String   @default("not_configured")
+  deploymentProvider     String   @default("none")
+  liveUrl                String   @default("")
+  revenueMode            String   @default("freemium")
+  priceMonthly           Float    @default(19)
+  usageUnitPrice         Float    @default(0)
+  estimatedMrr           Float    @default(0)
+  revenueProbabilityScore Float   @default(0)
+  launchPriorityScore    Float    @default(0)
+  marketplaceListed      Boolean  @default(false)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  generatedFiles     GeneratedFile[]
+  validationIssues   ValidationIssue[]
+  agentProposals     AgentProposal[]
+  marketplaceListing MarketplaceListing?
+  revenueSnapshots   RevenueSnapshot[]
+  deploymentChecks   DeploymentCheck[]
+}
+
+model GeneratedFile {
+  id        String   @id @default(cuid())
+  appId     String
+  path      String
+  content   String
+  fileType  String   @default("source")
+  createdAt DateTime @default(now())
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+}
+
+model ValidationIssue {
+  id            String   @id @default(cuid())
+  appId         String
+  severity      String   @default("minor")
+  category      String   @default("general")
+  message       String
+  lineNumber    Int      @default(0)
+  matchedText   String   @default("")
+  suggestedFix  String   @default("")
+  createdAt     DateTime @default(now())
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+}
+
+model AgentProposal {
+  id                    String   @id @default(cuid())
+  appId                 String
+  agentName             String
+  proposalType          String
+  confidence            Float    @default(0)
+  summary               String
+  recommendedActionsJson String  @default("[]")
+  risksJson             String   @default("[]")
+  status                String   @default("pending")
+  createdAt             DateTime @default(now())
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+}
+
+model MarketplaceListing {
+  id          String   @id @default(cuid())
+  appId       String   @unique
+  title       String
+  description String
+  category    String   @default("utility")
+  price       Float    @default(0)
+  rating      Float    @default(0)
+  cloneCount  Int      @default(0)
+  featured    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+}
+
+model RevenueSnapshot {
+  id                      String   @id @default(cuid())
+  appId                   String
+  visitorsPerMonth        Int      @default(1000)
+  conversionRate          Float    @default(0.04)
+  churnRate               Float    @default(0.05)
+  averagePrice            Float    @default(29)
+  grossMargin             Float    @default(0.85)
+  estimatedMrr            Float    @default(0)
+  retentionAdjustedRevenue Float   @default(0)
+  createdAt               DateTime @default(now())
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+}
+
+model DeploymentCheck {
+  id               String   @id @default(cuid())
+  appId            String
+  provider         String   @default("generic")
+  readinessScore   Int      @default(0)
+  missingItemsJson String   @default("[]")
+  status           String   @default("pending")
+  createdAt        DateTime @default(now())
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+}
