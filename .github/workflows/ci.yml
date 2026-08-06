@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: omni-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: omni_forge_ci
+          POSTGRES_USER: omni_forge_ci
+          POSTGRES_PASSWORD: omni_forge_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U omni_forge_ci -d omni_forge_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://omni_forge_ci:omni_forge_ci@localhost:5432/omni_forge_ci?schema=public
+      JWT_SECRET: omni-forge-ci-jwt-secret-not-for-production
+      NODE_ENV: test
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - name: Checkout (SHA-pinned, credentials not persisted)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node (SHA-pinned)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        # A committed lockfile is a follow-up release gate. Until then, this
+        # workflow remains honest about using npm's resolved graph.
+        run: npm install --no-audit --no-fund
+
+      - name: Rehearse complete migration chain on clean PostgreSQL
+        run: |
+          npm run db:migrate
+          npm run db:status
+
+      - name: Prove migrated database matches Prisma schema
+        run: >-
+          npx prisma migrate diff
+          --from-url "$DATABASE_URL"
+          --to-schema-datamodel prisma/schema.prisma
+          --exit-code
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Production build
+        env:
+          NODE_ENV: production
+        run: npm run build
+
+      - name: Runtime readiness smoke
+        env:
+          NODE_ENV: production
+          PORT: "3000"
+        run: |
+          set -euo pipefail
+          LOG="$RUNNER_TEMP/omni-forge-runtime.log"
+          npm run start -- -H 0.0.0.0 -p 3000 >"$LOG" 2>&1 &
+          PID=$!
+          cleanup() {
+            status=$?
+            kill "$PID" 2>/dev/null || true
+            wait "$PID" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then cat "$LOG" || true; fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:3000/api/ready >"$RUNNER_TEMP/ready.json"; then
+              cat "$RUNNER_TEMP/ready.json"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Omni-Forge never became ready"
+          cat "$LOG" || true
+          exit 1
