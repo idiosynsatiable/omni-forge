@@ -5,9 +5,12 @@
   "description": "Autonomous deployment, revenue intelligence, and TemplateForge validation layer — micro-SaaS command center",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
     "lint": "next lint",
+    "typecheck": "prisma generate && tsc --noEmit",
+    "db:migrate": "prisma migrate deploy",
+    "db:status": "prisma migrate status",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",
