@@ -1,8 +1,18 @@
 import prisma from "./db";
 import { toSlug } from "./validators";
 
-export async function listApps(filters?: { status?: string; category?: string }) {
-  const where: Record<string, unknown> = {};
+function assertOrganizationId(organizationId: number): void {
+  if (!Number.isSafeInteger(organizationId) || organizationId <= 0) {
+    throw new Error("A positive organization id is required");
+  }
+}
+
+export async function listApps(
+  organizationId: number,
+  filters?: { status?: string; category?: string }
+) {
+  assertOrganizationId(organizationId);
+  const where: Record<string, unknown> = { organizationId };
   if (filters?.status) where.status = filters.status;
   if (filters?.category) where.category = filters.category;
 
@@ -22,9 +32,10 @@ export async function listApps(filters?: { status?: string; category?: string })
   });
 }
 
-export async function getApp(id: string) {
-  return prisma.app.findUnique({
-    where: { id },
+export async function getApp(organizationId: number, id: string) {
+  assertOrganizationId(organizationId);
+  return prisma.app.findFirst({
+    where: { id, organizationId },
     include: {
       generatedFiles: true,
       validationIssues: { orderBy: { createdAt: "desc" } },
@@ -36,19 +47,27 @@ export async function getApp(id: string) {
   });
 }
 
-export async function createApp(data: {
-  name: string;
-  description: string;
-  category: string;
-  revenueMode: string;
-  priceMonthly: number;
-}) {
+export async function createApp(
+  organizationId: number,
+  userId: number,
+  data: {
+    name: string;
+    description: string;
+    category: string;
+    revenueMode: string;
+    priceMonthly: number;
+  }
+) {
+  assertOrganizationId(organizationId);
   const slug = toSlug(data.name);
+  if (!slug) throw new Error("App name does not produce a safe slug");
   const nextPort = await getNextPort();
 
   return prisma.app.create({
     data: {
       ...data,
+      organizationId,
+      createdByUserId: userId,
       slug,
       port: nextPort,
       status: "draft",
@@ -56,12 +75,29 @@ export async function createApp(data: {
   });
 }
 
-export async function updateApp(id: string, data: Record<string, unknown>) {
-  return prisma.app.update({ where: { id }, data });
+export async function updateApp(
+  organizationId: number,
+  id: string,
+  data: Record<string, unknown>
+) {
+  assertOrganizationId(organizationId);
+  const owned = await prisma.app.findFirst({
+    where: { id, organizationId },
+    select: { id: true },
+  });
+  if (!owned) return null;
+  return prisma.app.update({ where: { id: owned.id }, data });
 }
 
-export async function deleteApp(id: string) {
-  return prisma.app.delete({ where: { id } });
+export async function deleteApp(organizationId: number, id: string) {
+  assertOrganizationId(organizationId);
+  const owned = await prisma.app.findFirst({
+    where: { id, organizationId },
+    select: { id: true },
+  });
+  if (!owned) return false;
+  await prisma.app.delete({ where: { id: owned.id } });
+  return true;
 }
 
 export async function getNextPort(): Promise<number> {
