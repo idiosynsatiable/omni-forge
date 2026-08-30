@@ -1,25 +1,8 @@
 /**
- * CashSaasConnector — connects Omni-Forge Phase 3 to cash-saas-core-v2 backend.
- *
- * Endpoint map (cash-saas-core-v2):
- *   GET  /omni/platform-capabilities   → platform info, plans, features
- *   POST /omni/register-generated-app  → register a generated app (requires auth)
- *   POST /omni/create-billing-profile  → get billing config for an app
- *   POST /omni/create-api-product      → create API product entry
- *
- * Environment variables:
- *   CASH_SAAS_CORE_URL        — Base URL of cash-saas-core-v2 (e.g. http://localhost:8000)
- *   CASH_SAAS_ADMIN_API_KEY   — JWT Bearer token for authenticated endpoints
- *
- * When both env vars are set, the integration is automatically enabled.
- * When either is missing, all functions return safe disabled-mode responses.
+ * CashSaasConnector — server-to-server client for the canonical monetization
+ * authority. User-scoped mutations forward the caller's current bearer token;
+ * Omni does not store a second long-lived admin JWT universe.
  */
-
-export interface CashSaasConfig {
-  baseUrl: string;
-  adminToken: string;
-  enabled: boolean;
-}
 
 export interface CashSaasCapabilities {
   platform: string;
@@ -66,52 +49,74 @@ export interface CashSaasStatus {
   error: string | null;
 }
 
-function getConfig(): CashSaasConfig {
-  const baseUrl = (process.env.CASH_SAAS_CORE_URL || "").replace(/\/$/, "");
-  const adminToken = process.env.CASH_SAAS_ADMIN_API_KEY || "";
-  const enabled = Boolean(baseUrl && adminToken);
-  return { baseUrl, adminToken, enabled };
+function baseUrl(): string {
+  const value = (process.env.CASH_SAAS_CORE_URL || "").replace(/\/$/, "");
+  if (!value) return "";
+  const parsed = new URL(value);
+  if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:") {
+    throw new Error("CASH_SAAS_CORE_URL must use https in production");
+  }
+  return value;
 }
 
-function authHeaders(token: string): Record<string, string> {
+function headers(token?: string): Record<string, string> {
   return {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
+    Accept: "application/json",
     "X-Source": "omni-forge",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
 
-export async function getCashSaasStatus(): Promise<CashSaasStatus> {
-  const config = getConfig();
+async function safeJson<T>(response: Response): Promise<T | null> {
+  if (!response.ok) return null;
+  try {
+    return await response.json() as T;
+  } catch {
+    return null;
+  }
+}
 
-  if (!config.enabled) {
+export async function getCashSaasStatus(): Promise<CashSaasStatus> {
+  let url: string;
+  try {
+    url = baseUrl();
+  } catch (error) {
     return {
       connected: false,
       platform: null,
       features: [],
       plans: [],
-      error:
-        "Cash SaaS integration is disabled. Set CASH_SAAS_CORE_URL and CASH_SAAS_ADMIN_API_KEY in your environment.",
+      error: error instanceof Error ? error.message : "Invalid Cash-SaaS URL",
+    };
+  }
+
+  if (!url) {
+    return {
+      connected: false,
+      platform: null,
+      features: [],
+      plans: [],
+      error: "Cash-SaaS integration is disabled. Set CASH_SAAS_CORE_URL.",
     };
   }
 
   try {
-    const res = await fetch(`${config.baseUrl}/omni/platform-capabilities`, {
-      headers: authHeaders(config.adminToken),
+    const res = await fetch(`${url}/omni/platform-capabilities`, {
+      headers: headers(),
       signal: AbortSignal.timeout(8000),
+      cache: "no-store",
     });
-
-    if (!res.ok) {
+    const caps = await safeJson<CashSaasCapabilities>(res);
+    if (!caps) {
       return {
         connected: false,
         platform: null,
         features: [],
         plans: [],
-        error: `Cash SaaS returned ${res.status}: ${res.statusText}`,
+        error: `Cash-SaaS capability probe returned HTTP ${res.status}`,
       };
     }
-
-    const caps: CashSaasCapabilities = await res.json();
     return {
       connected: true,
       platform: caps.platform,
@@ -119,13 +124,15 @@ export async function getCashSaasStatus(): Promise<CashSaasStatus> {
       plans: Object.keys(caps.plans),
       error: null,
     };
-  } catch (err) {
+  } catch (error) {
     return {
       connected: false,
       platform: null,
       features: [],
       plans: [],
-      error: `Connection failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: error instanceof Error && error.name === "TimeoutError"
+        ? "Cash-SaaS capability probe timed out"
+        : "Cash-SaaS capability probe failed",
     };
   }
 }
@@ -134,24 +141,25 @@ export async function registerApp(params: {
   organizationId: number;
   appName: string;
   appSlug: string;
+  accessToken: string;
   revenueMode?: string;
   freeQuota?: number;
   paidPlan?: string;
   usageUnit?: string;
   usagePriceCents?: number;
 }): Promise<RegisteredApp | null> {
-  const config = getConfig();
-  if (!config.enabled) return null;
+  const url = baseUrl();
+  if (!url || !params.accessToken) return null;
 
   try {
-    const res = await fetch(`${config.baseUrl}/omni/register-generated-app`, {
+    const res = await fetch(`${url}/omni/register-generated-app`, {
       method: "POST",
-      headers: authHeaders(config.adminToken),
+      headers: headers(params.accessToken),
       body: JSON.stringify({
         organization_id: params.organizationId,
         app_name: params.appName,
         app_slug: params.appSlug,
-        revenue_mode: params.revenueMode || "subscription_plus_usage",
+        revenue_mode: params.revenueMode || "subscription",
         free_quota: params.freeQuota || 100,
         paid_plan: params.paidPlan || "starter",
         usage_unit: params.usageUnit || "api_call",
@@ -159,9 +167,7 @@ export async function registerApp(params: {
       }),
       signal: AbortSignal.timeout(10000),
     });
-
-    if (!res.ok) return null;
-    return await res.json();
+    return await safeJson<RegisteredApp>(res);
   } catch {
     return null;
   }
@@ -174,25 +180,22 @@ export async function getBillingProfile(params: {
   usageUnit?: string;
   usagePriceCents?: number;
 }): Promise<CashSaasBillingProfile | null> {
-  const config = getConfig();
-  if (!config.enabled) return null;
-
+  const url = baseUrl();
+  if (!url) return null;
   try {
-    const res = await fetch(`${config.baseUrl}/omni/create-billing-profile`, {
+    const res = await fetch(`${url}/omni/create-billing-profile`, {
       method: "POST",
-      headers: authHeaders(config.adminToken),
+      headers: headers(),
       body: JSON.stringify({
         app_name: params.appName,
         app_slug: params.appSlug,
-        revenue_mode: params.revenueMode || "subscription_plus_usage",
+        revenue_mode: params.revenueMode || "subscription",
         usage_unit: params.usageUnit || "api_call",
         usage_price_cents: params.usagePriceCents || 5,
       }),
       signal: AbortSignal.timeout(10000),
     });
-
-    if (!res.ok) return null;
-    return await res.json();
+    return await safeJson<CashSaasBillingProfile>(res);
   } catch {
     return null;
   }
@@ -204,13 +207,12 @@ export async function createApiProduct(params: {
   planKey?: string;
   endpoints?: string[];
 }): Promise<Record<string, unknown> | null> {
-  const config = getConfig();
-  if (!config.enabled) return null;
-
+  const url = baseUrl();
+  if (!url) return null;
   try {
-    const res = await fetch(`${config.baseUrl}/omni/create-api-product`, {
+    const res = await fetch(`${url}/omni/create-api-product`, {
       method: "POST",
-      headers: authHeaders(config.adminToken),
+      headers: headers(),
       body: JSON.stringify({
         app_name: params.appName,
         app_slug: params.appSlug,
@@ -219,32 +221,27 @@ export async function createApiProduct(params: {
       }),
       signal: AbortSignal.timeout(10000),
     });
-
-    if (!res.ok) return null;
-    return await res.json();
+    return await safeJson<Record<string, unknown>>(res);
   } catch {
     return null;
   }
 }
 
 export function generateCashSaasEnvBlock(slug: string): string {
-  return `# ── Cash SaaS Core V2 (monetization backend) ──
+  return `# ── Cash-SaaS Core (monetization authority) ──
 CASH_SAAS_CORE_URL=http://localhost:8000
-CASH_SAAS_ADMIN_API_KEY=
 CASH_SAAS_APP_SLUG=${slug}
 `;
 }
 
 export function getCashSaasDeploymentChecklist(): string[] {
   return [
-    "Deploy cash-saas-core-v2 (docker compose up -d)",
-    "Run Alembic migrations (alembic upgrade head)",
-    "Seed admin user (python scripts/seed_demo_data.py)",
-    "Configure Stripe products and prices",
-    "Set Stripe webhook endpoint to /stripe/webhook",
-    "Create organization and API keys",
-    "Set CASH_SAAS_CORE_URL in Omni-Forge environment",
-    "Set CASH_SAAS_ADMIN_API_KEY with valid JWT token",
-    "Verify /health and /metrics endpoints respond",
+    "Deploy Cash-SaaS Core with PostgreSQL",
+    "Run committed Alembic migrations",
+    "Configure Stripe products, prices, and signed webhook endpoint",
+    "Create/verify organization membership",
+    "Set CASH_SAAS_CORE_URL in Omni-Forge",
+    "Do not configure a static Cash-SaaS admin JWT in Omni-Forge",
+    "Verify /health and current /auth/me organization authority",
   ];
 }
