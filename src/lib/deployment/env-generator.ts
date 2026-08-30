@@ -24,6 +24,30 @@ export function generateEnvVars(app: {
       required: true,
       description: "Environment mode",
     },
+    {
+      key: "RUN_API_KEY",
+      value: "",
+      required: true,
+      description: "High-entropy API key required by the protected /run endpoint in production",
+    },
+    {
+      key: "CORS_ORIGINS",
+      value: "",
+      required: true,
+      description: "Comma-separated HTTPS browser origins allowed to call this app; wildcard is rejected in production",
+    },
+    {
+      key: "REQUEST_MAX_BYTES",
+      value: "65536",
+      required: true,
+      description: "Maximum accepted JSON request body size in bytes",
+    },
+    {
+      key: "RATE_LIMIT_PER_MINUTE",
+      value: "60",
+      required: true,
+      description: "Per-client request budget for the protected /run endpoint",
+    },
   ];
 
   if (app.revenueMode !== "free") {
@@ -43,7 +67,7 @@ export function generateEnvVars(app: {
       {
         key: "STRIPE_WEBHOOK_SECRET",
         value: "",
-        required: false,
+        required: true,
         description: "Stripe webhook signing secret",
       }
     );
@@ -58,7 +82,7 @@ export function generateEnvVars(app: {
       key: "OPENAI_API_KEY",
       value: "",
       required: false,
-      description: "OpenAI API key for AI features (optional — local fallback available)",
+      description: "OpenAI API key for AI features when an external provider is enabled",
     });
   }
 
