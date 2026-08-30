@@ -9,6 +9,12 @@ datasource db {
 
 model App {
   id                     String   @id @default(cuid())
+  organizationId         Int      @default(0)
+  createdByUserId        Int?
+  idempotencyKey         String?
+  requestHash            String?
+  generationAttempt      Int      @default(0)
+  lastGenerationError    String   @default("")
   name                   String
   slug                   String   @unique
   description            String
@@ -36,6 +42,10 @@ model App {
   marketplaceListing MarketplaceListing?
   revenueSnapshots   RevenueSnapshot[]
   deploymentChecks   DeploymentCheck[]
+
+  @@index([organizationId, createdAt])
+  @@index([organizationId, status])
+  @@unique([organizationId, idempotencyKey])
 }
 
 model GeneratedFile {
