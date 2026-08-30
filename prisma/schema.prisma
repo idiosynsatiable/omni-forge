@@ -16,7 +16,7 @@ model App {
   generationAttempt      Int      @default(0)
   lastGenerationError    String   @default("")
   name                   String
-  slug                   String   @unique
+  slug                   String
   description            String
   category               String   @default("utility")
   status                 String   @default("draft")
@@ -45,6 +45,7 @@ model App {
 
   @@index([organizationId, createdAt])
   @@index([organizationId, status])
+  @@unique([organizationId, slug])
   @@unique([organizationId, idempotencyKey])
 }
 
