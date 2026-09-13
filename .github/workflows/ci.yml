@@ -1,0 +1,78 @@
+name: Omni-Forge CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: omni-forge-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      DATABASE_URL: postgresql://omni_forge_ci:omni_forge_ci@127.0.0.1:5432/omni_forge_ci?schema=public
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: scope
+        name: Classify changed files
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed_files="$(gh api --paginate "repos/$REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[].filename')"
+          if [[ -z "$changed_files" ]]; then
+            echo "::error::Changed-files query returned no paths; refusing to skip verification."
+            exit 1
+          fi
+          run=false
+          while IFS= read -r file; do
+            case "$file" in
+              docs/*|*.md|*.mdx) ;;
+              *) run=true; break ;;
+            esac
+          done <<< "$changed_files"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install locked dependencies
+        if: steps.scope.outputs.run == 'true'
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        if: steps.scope.outputs.run == 'true'
+        run: npm run typecheck
+
+      - name: Run assertions
+        if: steps.scope.outputs.run == 'true'
+        run: npm test
+
+      - name: Build
+        if: steps.scope.outputs.run == 'true'
+        run: npm run build
